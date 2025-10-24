@@ -18,12 +18,20 @@ namespace Synth
     public partial class MainWindow : Window
     {
         private double volume = 0.25;
-
         private WaveOutEvent waveOut;
         private SynthWaveProvider synthProvider;
-
         private Dictionary<string, double> noteFrequencies;
         private List<ActiveNote> activeNotes = new List<ActiveNote>();
+        private Dictionary<Key, string> keyMap = new Dictionary<Key, string>
+        {
+            { Key.Z, "C" },
+            { Key.X, "D" },
+            { Key.C, "E" },
+            { Key.V, "F" },
+            { Key.B, "G" },
+            { Key.N, "A" },
+            { Key.M, "B" }
+        };
 
         public MainWindow()
         {
@@ -132,12 +140,29 @@ namespace Synth
                             activeNotes.RemoveAt(i);
                     }
 
+                    double polyphonyGain = 0.3; // tweak between 0.2–0.5
+                    sampleValue *= polyphonyGain;
                     // Prevent clipping
                     sampleValue = Math.Max(-1.0, Math.Min(1.0, sampleValue));
 
                     buffer[offset + n] = (short)(sampleValue * volume * short.MaxValue);
                 }
                 return sampleCount;
+            }          
+        }
+        private void Window_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (keyMap.TryGetValue(e.Key, out string note))
+            {
+                string waveform = ((ComboBoxItem)WaveformSelector.SelectedItem)?.Content.ToString() ?? "Sine";
+
+                activeNotes.Add(new ActiveNote
+                {
+                    Frequency = noteFrequencies[note],
+                    Phase = 0,
+                    Duration = 0.5,
+                    Waveform = waveform
+                });
             }
         }
     }
