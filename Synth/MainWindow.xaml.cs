@@ -17,24 +17,19 @@ namespace Synth
     /// </summary>
     public partial class MainWindow : Window
     {
-        private readonly WaveOutEvent waveOut;
-        private readonly BufferedWaveProvider waveProvider;
-        private readonly WaveFormat waveFormat;
-        private readonly Dictionary<string, double> noteFrequencies;
         private double volume = 0.25;
+
+        private WaveOutEvent waveOut;
+        private SynthWaveProvider synthProvider;
+
+        private Dictionary<string, double> noteFrequencies;
+        private List<ActiveNote> activeNotes = new List<ActiveNote>();
 
         public MainWindow()
         {
             InitializeComponent();
 
-            // Define sample rate & audio format
-            waveFormat = new WaveFormat(44100, 1);
-            waveOut = new WaveOutEvent();
-            waveProvider = new BufferedWaveProvider(waveFormat);
-            waveOut.Init(waveProvider);
-            waveOut.Play();
-
-            // Define frequencies for notes
+            // Setup notes
             noteFrequencies = new Dictionary<string, double>
             {
                 {"C", 261.63},
@@ -46,52 +41,104 @@ namespace Synth
                 {"B", 493.88}
             };
 
+            // Setup audio
+            synthProvider = new SynthWaveProvider(activeNotes, volume);
+            waveOut = new WaveOutEvent();
+            waveOut.Init(synthProvider);
+            waveOut.Play();
         }
 
+        // Add note to active list
         private void Key_Click(object sender, RoutedEventArgs e)
         {
             var btn = sender as Button;
             var note = btn?.Content.ToString();
             if (note == null || !noteFrequencies.ContainsKey(note)) return;
 
-            PlayTone(noteFrequencies[note], 0.3); // 0.3 seconds
-        }
+            string waveform = ((ComboBoxItem)WaveformSelector.SelectedItem)?.Content.ToString() ?? "Sine";
 
-        private void PlayTone(double frequency, double durationSeconds)
-        {
-            int sampleRate = waveFormat.SampleRate;
-            int sampleCount = (int)(sampleRate * durationSeconds);
-            byte[] buffer = new byte[sampleCount * 2]; // 16-bit samples
-
-            // Get selected waveform
-            string waveform = ((ComboBoxItem)WaveformSelector.SelectedItem).Content.ToString();
-
-            for (int n = 0; n < sampleCount; n++)
+            activeNotes.Add(new ActiveNote
             {
-                double t = (double)n / sampleRate;
-                double sampleValue = waveform switch
-                {
-                    "Sine" => Math.Sin(2 * Math.PI * frequency * t),
-                    "Square" => Math.Sign(Math.Sin(2 * Math.PI * frequency * t)),
-                    "Saw" => 2.0 * (t * frequency - Math.Floor(t * frequency)) - 1.0,
-                    _ => Math.Sin(2 * Math.PI * frequency * t)
-                };
-
-                short sample = (short)(sampleValue * volume * short.MaxValue); // volume = 0–1
-                buffer[2 * n] = (byte)(sample & 0xFF);
-                buffer[2 * n + 1] = (byte)((sample >> 8) & 0xFF);
-            }
-
-            waveProvider.AddSamples(buffer, 0, buffer.Length);
+                Frequency = noteFrequencies[note],
+                Phase = 0,
+                Duration = 0.5, // half-second notes
+                Waveform = waveform
+            });
         }
+
+        // Update volume
+        private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            volume = e.NewValue / 100.0;
+            if (synthProvider != null)
+                synthProvider.SetVolume(volume);
+        }
+
+        // Dispose audio on close
         protected override void OnClosed(EventArgs e)
         {
             waveOut.Dispose();
             base.OnClosed(e);
         }
-        private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+
+        // Active note class
+        private class ActiveNote
         {
-            volume = e.NewValue / 100.0; // convert 0–100 to 0–1
+            public double Frequency;
+            public double Phase;
+            public double Duration;
+            public string Waveform;
+        }
+
+        // Polyphonic WaveProvider
+        private class SynthWaveProvider : WaveProvider16
+        {
+            private List<ActiveNote> activeNotes;
+            private double volume;
+
+            public SynthWaveProvider(List<ActiveNote> notes, double vol)
+            {
+                activeNotes = notes;
+                volume = vol;
+            }
+
+            public void SetVolume(double vol)
+            {
+                volume = vol;
+            }
+
+            public override int Read(short[] buffer, int offset, int sampleCount)
+            {
+                for (int n = 0; n < sampleCount; n++)
+                {
+                    double sampleValue = 0;
+
+                    for (int i = activeNotes.Count - 1; i >= 0; i--)
+                    {
+                        var note = activeNotes[i];
+                        double val = note.Waveform switch
+                        {
+                            "Sine" => Math.Sin(2 * Math.PI * note.Frequency * note.Phase),
+                            "Square" => Math.Sign(Math.Sin(2 * Math.PI * note.Frequency * note.Phase)),
+                            "Saw" => 2.0 * (note.Frequency * note.Phase - Math.Floor(note.Frequency * note.Phase)) - 1.0,
+                            _ => Math.Sin(2 * Math.PI * note.Frequency * note.Phase)
+                        };
+                        sampleValue += val;
+
+                        note.Phase += 1.0 / WaveFormat.SampleRate;
+                        note.Duration -= 1.0 / WaveFormat.SampleRate;
+
+                        if (note.Duration <= 0)
+                            activeNotes.RemoveAt(i);
+                    }
+
+                    // Prevent clipping
+                    sampleValue = Math.Max(-1.0, Math.Min(1.0, sampleValue));
+
+                    buffer[offset + n] = (short)(sampleValue * volume * short.MaxValue);
+                }
+                return sampleCount;
+            }
         }
     }
 }
